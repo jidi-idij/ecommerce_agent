@@ -1,0 +1,27 @@
+# Web框架
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# LangChain/LangGraph核心
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langgraph>=0.2.0
+
+# 大模型API
+openai>=1.30.0
+
+# Redis缓存
+redis>=5.0.0
+
+# 向量数据库（可选，用于实际部署）
+qdrant-client>=1.9.0
+
+# 搜索引擎（可选，用于实际部署）
+elasticsearch>=8.13.0
+
+# 工具依赖
+numpy>=1.26.0
+
+# 环境管理
+python-dotenv>=1.0.0
