@@ -62,7 +62,7 @@ def _resolve_cat(raw: str) -> tuple[str | None, str, bool]:
     return None, hint, True
 
 
-def intent_node(state: AgentState) -> dict:
+def intent_node(state: AgentState) -> dict: 
     m = monitor.node_start("intent_node", state.query[:80])
     print(f"\n[Node] 意图识别 | \"{state.query}\"")
 
@@ -311,10 +311,10 @@ def after_sales_node(state: AgentState) -> dict:
     m = monitor.node_start("after_sales_node", state.query[:80])
     response = """您好！售后客服为您服务：
 
-- 🔄 **退货退款** - 7天无理由，商品未拆封
-- 🔄 **换货** - 15天内质量问题免费换
-- 🔧 **保修维修** - 1年官方保修
-- 💰 **价保申请** - 30天内降价退差
+- 退货退款 - 7天无理由，商品未拆封
+- 换货 - 15天内质量问题免费换
+- 保修维修 - 1年官方保修
+- 价保申请 - 30天内降价退差
 
 请描述您的具体情况，我会为您详细解答流程。"""
     monitor.node_end(m, "after_sales_reply")
