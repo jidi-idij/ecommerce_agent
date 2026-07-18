@@ -162,7 +162,7 @@ async function sendMessage(){
     // diagnose 只在 SSE 监控流显示，不发送到主对话
   }catch(e){
     document.getElementById('loading').style.display='none';
-    addMessage('❌ 网络错误，请重试',false);
+    addMessage('网络错误，请重试',false);
   }
 }
 
@@ -209,7 +209,7 @@ async function startBatchTest(count){
   }
 }
 
-addMessage('👋 你好！我是智能电商导购助手。我可以帮您：\n• 搜索和推荐商品\n• 对比商品价格\n• 查询库存和优惠\n• 解答售后问题\n\n请告诉我您想购买什么？',false);
+addMessage('你好！我是智能电商导购助手。我可以帮您：\n• 搜索和推荐商品\n• 对比商品价格\n• 查询库存和优惠\n• 解答售后问题\n\n请告诉我您想购买什么？',false);
 ProductSearchTool.hot(5).forEach(p=>addProductCard(p));
 </script>
 </body>
