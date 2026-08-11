@@ -19,6 +19,8 @@ from app.graph import get_graph
 from app.cache import cache
 from app.tools import ProductSearchTool, PriceMonitorTool, InventoryTool
 import app.monitor as mon
+from app import eval as evalmod
+from app import memory as mem
 
 # 项目根目录
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +43,19 @@ class BatchReq(BaseModel):
 
 class ModeReq(BaseModel):
     enable: bool
+
+
+class EvalReq(BaseModel):
+    count: int = Field(default=10, ge=1, le=30)
+    custom_prompt: str = ""
+    judge: bool = False  # 语义扩展类是否启用 LLM-as-a-Judge
+
+
+class EventReq(BaseModel):
+    event_type: str  # impression / click / conversion
+    sid: str = ""
+    product_id: str = ""
+    meta: dict = {}
 
 
 # ============ 页面 ============
@@ -72,11 +87,32 @@ async def get_mode():
 
 # ============ 对话 ============
 
+# 会话上下文管理：sid -> 历史消息列表（内存存储，保留最近 MAX_HISTORY_TURNS 轮）
+_histories: dict = {}
+MAX_HISTORY_TURNS = 6
+
+
+def _get_history(sid: str) -> list:
+    return list(_histories.get(sid, []))
+
+
+def _append_history(sid: str, query: str, response: str):
+    h = _histories.get(sid, [])
+    h += [{"role": "user", "content": query},
+          {"role": "assistant", "content": (response or "")[:300]}]
+    _histories[sid] = h[-MAX_HISTORY_TURNS * 2:]
+    # 防止会话数无限增长
+    if len(_histories) > 1000:
+        for k in list(_histories.keys())[:500]:
+            del _histories[k]
+
+
 @app.post("/api/chat")
 async def chat(req: ChatReq):
     t0 = time.time()
     sid = req.thread_id or f"s{int(time.time() * 1000)}"
-    state = AgentState(query=req.message)
+    state = AgentState(query=req.message, chat_history=_get_history(sid),
+                       memory=mem.summary_text(sid))
     mon.start_session(sid, req.message)
 
     try:
@@ -96,6 +132,10 @@ async def chat(req: ChatReq):
     full_resp = final.get("response", "") if isinstance(final, dict) else getattr(final, "response", "")
     if not full_resp:
         full_resp = "抱歉，系统暂时无法生成回复，请再试一次。"
+    _append_history(sid, req.message, full_resp)
+    # 沉淀长期记忆（意图属性比纯文本更可靠）
+    attrs = getattr(intent_raw, "attributes", None) or {}
+    mem.update(sid, req.message, attrs)
     report = mon.finish_session(intent_type=intent_str, response=full_resp)
 
     diagnosis = ""
@@ -117,7 +157,8 @@ async def chat(req: ChatReq):
 async def chat_stream(req: ChatReq):
     async def gen():
         sid = req.thread_id or f"s{int(time.time() * 1000)}"
-        state = AgentState(query=req.message)
+        state = AgentState(query=req.message, chat_history=_get_history(sid),
+                           memory=mem.summary_text(sid))
         mon.start_session(sid, req.message)
         yield f"data: {json.dumps({'t': 'session', 'sid': sid, 'query': req.message}, ensure_ascii=False)}\n\n"
 
@@ -129,6 +170,9 @@ async def chat_stream(req: ChatReq):
             intent_raw = final.get("intent") if isinstance(final, dict) else getattr(final, "intent", None)
             intent_str = intent_raw.intent_type.value if intent_raw and hasattr(intent_raw, "intent_type") else ""
             full_resp = final.get("response", "") if isinstance(final, dict) else getattr(final, "response", "")
+            _append_history(sid, req.message, full_resp)
+            attrs = getattr(intent_raw, "attributes", None) or {}
+            mem.update(sid, req.message, attrs)
             report = mon.finish_session(intent_type=intent_str, response=full_resp)
             recs = final.get("recommended_products", []) if isinstance(final, dict) else getattr(final, "recommended_products", [])
             yield f"data: {json.dumps({'t': 'report', 'report': report}, ensure_ascii=False)}\n\n"
@@ -138,6 +182,31 @@ async def chat_stream(req: ChatReq):
             yield f"data: {json.dumps({'t': 'error', 'err': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.delete("/api/chat/history/{sid}")
+async def clear_history(sid: str):
+    """清空指定会话的上下文（开始新对话时调用）"""
+    _histories.pop(sid, None)
+    return {"cleared": sid}
+
+
+# ============ 长期记忆（用户偏好） ============
+
+@app.get("/api/memory/{sid}")
+async def get_memory(sid: str):
+    return {"sid": sid, "summary": mem.summary_text(sid), "profile": mem.get(sid)}
+
+
+@app.get("/api/memory")
+async def list_memory(limit: int = 20):
+    return {"profiles": mem.list_all(limit)}
+
+
+@app.delete("/api/memory/{sid}")
+async def clear_memory(sid: str):
+    mem.clear(sid)
+    return {"cleared": sid}
 
 
 # ============ 商品接口 ============
@@ -243,6 +312,44 @@ async def all_responses(limit: int = 20):
               "response": r.get("response_full", r.get("response", ""))[:800],
               "ms": r.get("total_ms")} for r in mon.get_recent(limit)]
     return {"count": len(items), "responses": items}
+
+
+# ============ 效果评估（RAG + Agent + 在线指标） ============
+
+@app.post("/api/dev/eval")
+async def run_eval(req: EvalReq):
+    """量化评估：Recall@K / MRR + 结构化字段准确率 + 可选 LLM-Judge"""
+    cases = mon.generate_test_cases(count=req.count, custom_prompt=req.custom_prompt)
+    graph = get_graph()
+
+    def invoke(state):
+        return graph.invoke(state, config={"configurable": {"thread_id": f"eval_{int(time.time() * 1000)}"}})
+
+    result = await asyncio.to_thread(evalmod.evaluate_batch, invoke, cases, req.judge)
+    result["test_cases"] = cases
+
+    # 与批量测试对齐：同时产出回复内容列表和 LLM 综合分析报告
+    pseudo_reports = [{"query": d.get("query", ""), "total_ms": 0, "nodes": [],
+                       "response_full": d.get("response", ""),
+                       "error": d.get("error"), "recommended_products": []}
+                      for d in result.get("details", [])]
+    result["responses"] = [{"query": d.get("query", ""),
+                            "response": d.get("response", "")[:500]}
+                           for d in result.get("details", [])]
+    result["analysis"] = await asyncio.to_thread(mon.analyze_all_reports, pseudo_reports)
+    return result
+
+
+@app.post("/api/events")
+async def track_event(req: EventReq):
+    """在线埋点：impression / click / conversion"""
+    return evalmod.track_event(req.event_type, req.sid, req.product_id, req.meta)
+
+
+@app.get("/api/events/summary")
+async def event_summary():
+    """在线指标：CTR / CVR"""
+    return evalmod.online_summary()
 
 
 # ============ 启动 ============

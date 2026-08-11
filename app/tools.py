@@ -12,7 +12,12 @@ from app.models import Product, MOCK_PRODUCTS, get_product
 from app.cache import cache
 
 
+# ============================================================
+# 文本处理工具
+# ============================================================
+
 def _to_vec(text: str) -> Counter:
+    """将文本转为词频向量（中文2-gram + 英文单词 + 数字）"""
     words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+|\d+', text.lower())
     ngrams = []
     for w in words:
@@ -23,6 +28,7 @@ def _to_vec(text: str) -> Counter:
 
 
 def _cosine(v1: Counter, v2: Counter) -> float:
+    """计算两个词频向量的余弦相似度"""
     inter = set(v1.keys()) & set(v2.keys())
     if not inter:
         return 0.0
@@ -30,6 +36,42 @@ def _cosine(v1: Counter, v2: Counter) -> float:
     den = (sum(v ** 2 for v in v1.values()) * sum(v ** 2 for v in v2.values())) ** 0.5
     return num / den if den else 0.0
 
+
+# 简单停用词过滤，避免"好的"、"一部"等无意义词污染召回
+_STOPWORDS = {"好的", "一个", "一下", "这个", "那个", "适合", "推荐", "想要",
+              "需要", "给我", "一部", "一下", "可以", "有没有", "有没有"}
+
+
+def _segment(text: str) -> List[str]:
+    """中文分词：提取中文2-gram、英文单词、数字，并过滤停用词"""
+    # 提取中文词组（2字以上）、英文单词、数字
+    words = re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]+|\d+', text.lower())
+    
+    ngrams = []
+    result = []
+    
+    for w in words:
+        # 过滤停用词
+        if w in _STOPWORDS:
+            continue
+            
+        # 长中文词做2-gram滑动窗口
+        if len(w) >= 4 and re.match(r'^[\u4e00-\u9fff]+$', w):
+            for i in range(len(w) - 1):
+                ngrams.append(w[i:i + 2])
+        # 2-3字中文词直接保留
+        elif re.match(r'^[\u4e00-\u9fff]+$', w):
+            ngrams.append(w)
+        # 英文、数字保留
+        else:
+            result.append(w)
+            
+    return list(set(result + ngrams))
+
+
+# ============================================================
+# 商品搜索工具
+# ============================================================
 
 class ProductSearchTool:
     """商品搜索工具"""
@@ -42,10 +84,15 @@ class ProductSearchTool:
         if cached is not None:
             return cached
 
-        terms = [t for t in query.split() if len(t) >= 2] if query else []
+        # 关键修复 1：使用中文分词代替简单的 split()
+        terms = [t for t in _segment(query) if len(t) >= 2] if query else []
+        
         results = []
         for p in MOCK_PRODUCTS:
-            text = f"{p.title} {p.description} {p.brand} {' '.join(p.tags)}".lower()
+            # 关键修复 2：加入 p.category.value，让"手机"等品类词能匹配到所有对应商品
+            text = f"{p.title} {p.description} {p.brand} {p.category.value} {' '.join(p.tags)}".lower()
+            
+            # 匹配逻辑：无关键词时全量召回；有关键词时任意匹配即召回（OR 语义，保证粗召回率）
             if not terms or any(t in text for t in terms):
                 results.append(p)
 
@@ -63,14 +110,25 @@ class ProductSearchTool:
         return out
 
     @staticmethod
-    def semantic_search(query: str, category: str = None, limit: int = 20) -> List[Dict]:
-        candidates = [p for p in MOCK_PRODUCTS if not category or category in p.category.value or category in p.title]
+    def semantic_search(query: str, category: str = None, 
+                        min_price: float = None, max_price: float = None,
+                        limit: int = 20) -> List[Dict]:
+        """语义搜索（基于词袋+余弦相似度）。关键修复：候选池先做价格+品类预过滤"""
+        
+        # 关键修复 3：语义通道也做价格预过滤，避免高价商品占满候选池
+        candidates = [p for p in MOCK_PRODUCTS 
+                      if (not category or category in p.category.value or category in p.title)
+                      and (min_price is None or p.price >= min_price)
+                      and (max_price is None or p.price <= max_price)]
+        
         if not candidates:
             return []
+        
         qv = _to_vec(query)
         scored = []
         for p in candidates:
-            txt = f"{p.title} {p.description} {p.brand} {' '.join(p.tags)}"
+            # 关键修复 4：加入 p.category.value，保证品类词参与语义计算
+            txt = f"{p.title} {p.description} {p.brand} {p.category.value} {' '.join(p.tags)}"
             sim = _cosine(qv, _to_vec(txt))
             if sim > 0.01:
                 scored.append((sim, p))
@@ -112,6 +170,10 @@ class ProductSearchTool:
         return [p.to_dict() for p in cands[:limit]]
 
 
+# ============================================================
+# 价格监控工具
+# ============================================================
+
 class PriceMonitorTool:
     """价格监控工具"""
 
@@ -140,6 +202,10 @@ class PriceMonitorTool:
         return deals[:limit]
 
 
+# ============================================================
+# 库存查询工具
+# ============================================================
+
 class InventoryTool:
     """库存查询工具"""
 
@@ -151,6 +217,10 @@ class InventoryTool:
         status = "充足" if p.stock > 200 else "紧张" if p.stock > 50 else "告急"
         return {"product_id": product_id, "title": p.title, "stock": p.stock, "status": status, "can_buy": p.stock > 0}
 
+
+# ============================================================
+# 评价分析工具
+# ============================================================
 
 class ReviewTool:
     """评价分析工具"""

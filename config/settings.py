@@ -18,7 +18,7 @@ class LLMConfig:
     """大模型配置"""
     api_key: str = "sk-ws-H.RYDIHEI.lko8.MEUCIBfa4jz5s4x_eKTSvEab6m-xjrV9OZNu6M9S-JECmMmPAiEAukWscoqVYhoVjU8s5f27nY26zNjHIDdVBZZU2bAvaF8"
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    model: str = "qwen3.7-max"
+    model: str = "qwen3-max"
     temperature: float = 0.7
     max_tokens: int = 2000
 

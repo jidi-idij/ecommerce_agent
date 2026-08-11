@@ -87,6 +87,7 @@ class AgentState:
     """LangGraph Agent状态"""
     query: str = ""
     chat_history: List[Dict[str, str]] = field(default_factory=list)
+    memory: str = ""  # 长期记忆：用户偏好摘要（由 main.py 注入）
     intent: Optional[UserIntent] = None
     search_results: List[Product] = field(default_factory=list)
     sorted_products: List[Product] = field(default_factory=list)

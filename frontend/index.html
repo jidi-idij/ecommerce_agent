@@ -49,8 +49,17 @@ button:hover{transform:scale(1.05)}
 .monitor-log{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-family:'Courier New',monospace;font-size:11px;height:200px;overflow-y:auto;line-height:1.6}
 .log-entry{margin-bottom:4px;padding:2px 0;border-bottom:1px solid #333}
 .response-content{background:#f5f5f5;padding:12px;border-radius:8px;margin-top:12px;font-size:13px;line-height:1.6;max-height:300px;overflow-y:auto;white-space:pre-line}
+.metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.metric-card{background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:10px;text-align:center}
+.metric-card .mv{font-size:18px;font-weight:700;color:#667eea}
+.metric-card .ml{font-size:11px;color:#888;margin-top:2px}
+.metric-card.good .mv{color:#27ae60}
+.metric-card.warn .mv{color:#e67e22}
+.metric-card.bad .mv{color:#e74c3c}
+.eval-detail{background:#f5f5f5;padding:10px;border-radius:8px;margin-top:10px;font-size:12px;line-height:1.6;max-height:220px;overflow-y:auto;white-space:pre-line;font-family:'Courier New',monospace}
 .footer{text-align:center;padding:16px;background:#f8f9fa;color:#666;font-size:12px;border-top:1px solid #eee}
 </style>
+<base target="_blank">
 <base target="_blank">
 </head>
 <body>
@@ -85,10 +94,16 @@ button:hover{transform:scale(1.05)}
 </div>
 <div class="dev-panel" id="devPanel">
 <div class="dev-section">
-<div class="dev-title">批量测试</div>
-<button class="dev-btn" onclick="startBatchTest(5)">5条快速测试</button>
-<button class="dev-btn" onclick="startBatchTest(10)">10条标准测试</button>
-<button class="dev-btn" onclick="startBatchTest(20)">20条完整测试</button>
+<div class="dev-title">批量测试 & 效果评估</div>
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+<input type="number" id="testCount" value="10" min="1" max="30" style="width:70px;padding:8px;border:2px solid #e0e0e0;border-radius:6px;font-size:13px">
+<label style="font-size:12px;color:#666">条（1-30）</label>
+</div>
+<button class="dev-btn" onclick="startBatchTest(getCount())">批量测试（回复+报告）</button>
+<button class="dev-btn" onclick="startEval(getCount(),false)">响应效果评估</button>
+<button class="dev-btn" onclick="startEval(getCount(),true)">响应效果评估+Judge</button>
+<div class="metric-grid" id="evalMetrics"></div>
+<div class="eval-detail" id="evalDetail" style="display:none"></div>
 </div>
 <div class="dev-section">
 <div class="dev-title">实时监控</div>
@@ -101,6 +116,18 @@ button:hover{transform:scale(1.05)}
 <div class="dev-section">
 <div class="dev-title">综合分析报告</div>
 <div class="response-content" id="analysisContent">点击批量测试后，此处显示综合分析报告...</div>
+</div>
+<div class="dev-section">
+<div class="dev-title">长期记忆（用户偏好）</div>
+<button class="dev-btn" onclick="refreshMemory()">查看当前会话</button>
+<button class="dev-btn" onclick="refreshMemoryAll()">查看全部会话</button>
+<button class="dev-btn" onclick="clearMemory()">清空当前会话记忆</button>
+<div class="response-content" id="memoryContent">聊天几轮后点击「查看当前会话」，此处显示沉淀的用户偏好...</div>
+</div>
+<div class="dev-section">
+<div class="dev-title">在线指标（CTR / CVR）</div>
+<button class="dev-btn" onclick="refreshOnline()">刷新在线指标</button>
+<div class="metric-grid" id="onlineMetrics"><div class="metric-card"><div class="mv">-</div><div class="ml">点击刷新</div></div></div>
 </div>
 </div>
 </div>
@@ -130,6 +157,13 @@ function addMessage(text,isUser){
   document.getElementById('chatMessages').scrollTop=999999;
 }
 
+// ===== 在线埋点：曝光/点击/转化 =====
+function track(eventType,productId){
+  fetch('/api/events',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({event_type:eventType,sid:currentSid||'',product_id:productId||''})})
+    .catch(()=>{});
+}
+
 function addProductCard(product){
   const div=document.createElement('div');
   div.className='product-card';
@@ -138,8 +172,11 @@ function addProductCard(product){
       <span class="product-price">¥${product.price}</span>
       <span class="product-rating">⭐${product.rating}</span>
     </div>
-    <div class="product-tags">${(product.tags||[]).map(t=>`<span class="tag">${t}</span>`).join('')}</div>`;
+    <div class="product-tags">${(product.tags||[]).map(t=>`<span class="tag">${t}</span>`).join('')}</div>
+    <button class="quick-btn" style="margin-top:8px" onclick="event.stopPropagation();track('conversion','${product.id}');this.textContent='✓ 已加购'">🛒 加入购物车</button>`;
+  div.onclick=()=>track('click',product.id);
   document.getElementById('productsList').appendChild(div);
+  track('impression',product.id);
 }
 
 async function sendMessage(){
@@ -209,8 +246,132 @@ async function startBatchTest(count){
   }
 }
 
+// ===== 效果评估 =====
+function getCount(){
+  const v=parseInt(document.getElementById('testCount').value,10);
+  if(isNaN(v)||v<1)return 1;
+  return Math.min(v,30);
+}
+
+function metricCard(label,value,thresholds){
+  // thresholds: [warn线, good线]，越高越好；null/undefined 显示 '-'
+  let cls='',v='-';
+  if(value!==null&&value!==undefined){
+    v=typeof value==='number'?value.toFixed(2):value;
+    cls=value>=thresholds[1]?'good':(value>=thresholds[0]?'warn':'bad');
+  }
+  return `<div class="metric-card ${cls}"><div class="mv">${v}</div><div class="ml">${label}</div></div>`;
+}
+
+async function startEval(count,judge){
+  const log=document.getElementById('monitorLog');
+  const grid=document.getElementById('evalMetrics');
+  const detail=document.getElementById('evalDetail');
+  log.innerHTML+=`<div class="log-entry">>>> 开始效果评估: ${count}条 judge=${judge}</div>`;
+  grid.innerHTML='<div class="metric-card"><div class="mv">⏳</div><div class="ml">评估中...</div></div>';
+  detail.style.display='none';
+  try{
+    const res=await fetch('/api/dev/eval',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({count,judge})});
+    const data=await res.json();
+    const r=data.rag||{},a=data.agent||{},j=data.judge||{};
+    grid.innerHTML=
+      metricCard('Recall@5',r['recall@5'],[0.5,0.7])+
+      metricCard('Recall@20',r['recall@20'],[0.7,0.85])+
+      metricCard('MRR',r.mrr,[0.5,0.7])+
+      metricCard('意图准确率',a.intent_acc,[0.8,0.9])+
+      metricCard('品类准确率',a.category_acc,[0.7,0.85])+
+      metricCard('价格准确率',a.max_price_acc,[0.7,0.85])+
+      (j.avg_score!==undefined?metricCard('Judge均分(/2)',j.avg_score,[1.0,1.5])+
+       metricCard('Judge通过率',j['pass_rate(score>=1)'],[0.7,0.85]):'');
+    log.innerHTML+=`<div class="log-entry">>>> 评估完成: ${data.evaluated}/${data.total}条</div>`;
+    // 同时填充「Agent回复内容」和「综合分析报告」，与批量测试保持一致
+    if(data.responses){
+      let respText=`共${data.total}条评估:\n\n`;
+      data.responses.forEach((r,i)=>{
+        respText+=`[${i+1}] ${r.query}\n回复: ${(r.response||'').slice(0,200)}...\n---\n`;
+      });
+      document.getElementById('responseContent').textContent=respText;
+    }
+    document.getElementById('analysisContent').textContent=
+      (data.analysis!==null&&data.analysis!==undefined)?data.analysis:'无分析报告';
+    // 明细：列出结构化校验失败的case
+    let lines=`共${data.total}条, RAG可评估${r.cases||0}条, Judge ${j.cases||0}条\n`;
+    (data.details||[]).forEach((d,i)=>{
+      const ag=d.agent||{};
+      const fails=Object.entries(ag).filter(([k,v])=>!v.ok)
+        .map(([k,v])=>`${k}:期望${v.expected}/实际${v.actual}`);
+      let tag=fails.length?'❌':'✅';
+      let line=`${tag}[${i+1}] ${d.query}`;
+      if(d.rag)line+=` R@5=${d.rag['recall@5']} MRR=${d.rag.mrr}`;
+      if(d.expected&&d.expected.semantic)line+=' [语义类]';
+      if(fails.length)line+=`\n    ${fails.join(' | ')}`;
+      if(d.judge)line+=`\n    Judge:${d.judge.score}分 ${d.judge.reason}`;
+      lines+=line+'\n';
+    });
+    detail.textContent=lines;
+    detail.style.display='block';
+  }catch(e){
+    log.innerHTML+=`<div class="log-entry">>>> 评估错误: ${e}</div>`;
+    grid.innerHTML=`<div class="metric-card bad"><div class="mv">✗</div><div class="ml">评估失败</div></div>`;
+  }
+}
+
+// ===== 长期记忆 =====
+function formatProfile(sid,p){
+  if(!p||!p.turns)return `会话 ${sid}: 暂无记忆`;
+  const top=(obj,n)=>Object.entries(obj||{}).sort((a,b)=>b[1]-a[1]).slice(0,n).map(([k,v])=>`${k}(${v})`).join('、')||'无';
+  let s=`会话 ${sid} | ${p.turns}轮对话\n`;
+  s+=`关注品类: ${top(p.categories,3)}\n偏好品牌: ${top(p.brands,3)}\n`;
+  s+=`预算区间: ${p.budget_min??'不限'} - ${p.budget_max??'不限'} 元\n`;
+  s+=`价格敏感: ${p.price_sensitive?'是（关注性价比）':'否'}\n`;
+  s+=`人群场景: ${top(p.personas,3)}\n`;
+  s+=`更新时间: ${p.updated?new Date(p.updated*1000).toLocaleString():'-'}`;
+  return s;
+}
+
+async function refreshMemory(){
+  const box=document.getElementById('memoryContent');
+  if(!currentSid){box.textContent='先在左侧聊几轮，产生会话后再查看';return;}
+  try{
+    const d=await(await fetch(`/api/memory/${currentSid}`)).json();
+    box.textContent=`偏好摘要: ${d.summary||'（暂未沉淀）'}\n\n${formatProfile(d.sid,d.profile)}`;
+  }catch(e){box.textContent='获取失败: '+e;}
+}
+
+async function refreshMemoryAll(){
+  const box=document.getElementById('memoryContent');
+  try{
+    const d=await(await fetch('/api/memory?limit=10')).json();
+    const items=Object.entries(d.profiles||{});
+    box.textContent=items.length?items.map(([sid,p])=>formatProfile(sid,p)).join('\n\n'):'暂无任何会话记忆';
+  }catch(e){box.textContent='获取失败: '+e;}
+}
+
+async function clearMemory(){
+  const box=document.getElementById('memoryContent');
+  if(!currentSid){box.textContent='暂无当前会话';return;}
+  await fetch(`/api/memory/${currentSid}`,{method:'DELETE'}).catch(()=>{});
+  box.textContent=`已清空会话 ${currentSid} 的长期记忆`;
+}
+
+// ===== 在线指标 =====
+async function refreshOnline(){
+  const grid=document.getElementById('onlineMetrics');
+  try{
+    const res=await fetch('/api/events/summary');
+    const d=await res.json();
+    grid.innerHTML=
+      `<div class="metric-card"><div class="mv">${d.impressions}</div><div class="ml">曝光</div></div>`+
+      `<div class="metric-card"><div class="mv">${d.clicks}</div><div class="ml">点击</div></div>`+
+      metricCard('CTR',d.CTR,[0.05,0.1])+
+      metricCard('CVR',d.CVR,[0.05,0.15]);
+  }catch(e){
+    grid.innerHTML=`<div class="metric-card bad"><div class="mv">✗</div><div class="ml">获取失败</div></div>`;
+  }
+}
+
 addMessage('你好！我是智能电商导购助手。我可以帮您：\n• 搜索和推荐商品\n• 对比商品价格\n• 查询库存和优惠\n• 解答售后问题\n\n请告诉我您想购买什么？',false);
-ProductSearchTool.hot(5).forEach(p=>addProductCard(p));
+fetch('/api/products/hot?limit=5').then(r=>r.json()).then(d=>(d.products||[]).forEach(p=>addProductCard(p))).catch(()=>{});
 </script>
 </body>
 </html>

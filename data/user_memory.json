@@ -1,0 +1,31 @@
+{
+ "s1786348786935": {
+  "categories": {
+   "手机": 1
+  },
+  "brands": {},
+  "personas": {
+   "学生党": 1
+  },
+  "budget_min": null,
+  "budget_max": 2000.0,
+  "price_sensitive": false,
+  "turns": 1,
+  "updated": 1786351129.0980542
+ },
+ "s1786351130538": {
+  "categories": {
+   "手机": 2,
+   "耳机": 1
+  },
+  "brands": {},
+  "personas": {
+   "学生党": 1
+  },
+  "budget_min": 2000.0,
+  "budget_max": 2000.0,
+  "price_sensitive": false,
+  "turns": 4,
+  "updated": 1786369922.933507
+ }
+}
